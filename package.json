@@ -1,0 +1,43 @@
+{
+  "name": "dsh-claude-in",
+  "version": "0.1.0",
+  "description": "\u8ba9 DeepSeek Harness \u6253\u5f00\u5de5\u4f5c\u533a\u65f6\u81ea\u52a8\u8f7d\u5165 Claude Code \u914d\u7f6e\uff1aSkills/Rules/Hooks/Agents \u56db\u6837\u8d44\u4ea7\uff0c\u56fa\u5b9a\u53cc\u4f4d\u7f6e\uff08\u5de5\u4f5c\u533a\u81ea\u8eab .claude + ~/.claude\uff09\u8fd0\u884c\u65f6\u76f4\u8bfb\u3001\u96f6\u5199\u5165\u3002Claude Code \u517c\u5bb9\u5c42\u3002",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "scripts/build.sh",
+    "README.md"
+  ],
+  "license": "BSD-3-Clause",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-hook-protocol": "0.1.0-rc.6"
+  },
+  "bundledDependencies": [
+    "@deepseek-ai/dsh-hook-protocol"
+  ],
+  "peerDependencies": {
+    "cordis": ">=4.0.0-rc <5",
+    "yaml": "^2"
+  },
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "test": "node tests/test.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,7 @@
+# dsh-claude-in bundle 层：工作区 `.claude` 自动载入器。
+# 打开工作区时自动载入（运行时直读、零写入）：
+# 当前工作区自身的 .claude + 用户级 ~/.claude 的 Skills/Rules/Hooks/Agents。
+- insert:
+    - id: dsh-claude-in
+      name: 'dsh-claude-in'
+      config: {}
