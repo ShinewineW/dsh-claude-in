@@ -18,7 +18,7 @@
 import type { Context } from 'cordis'
 import { statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage } from './compat.ts'
 import type { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import { resolveConfig } from './config.ts'
 import type { Config, ResolvedConfig } from './config.ts'

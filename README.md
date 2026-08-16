@@ -66,7 +66,7 @@ pnpm add "file:/path/to/dsh-claude-in"
 # 然后把包名写进 profile 的 cordis.patch.yml 或依赖的 dsh.bundle.patch 自装配
 ```
 
-依赖：`@deepseek-ai/dsh-hook-protocol@0.1.0-rc.6`（bundle 内打包 `bundledDependencies`），`yaml`（经 DSH 检出回落层解析），其余为类型级 peer。构建：`bash scripts/build.sh`（bun；缺 bun 时先 `npm i -g bun`）。测试：`node tests/test.mjs`（34 条；核心用例基于临时目录，实景扫描用例依赖本机 `.claude` 布局）。
+依赖：`@deepseek-ai/dsh-hook-protocol@0.1.0-rc.6`（bundle 内打包 `bundledDependencies`）；`yaml` 在构建时打进 `lib/index.js`（产物自包含，任何安装位置可加载，无需宿主回落层）；宿主 API 的极小面（`isSkillName` / `createUserMessage`）为本地实现（`src/compat.ts`，与 DSH 0.1.0-rc.6 语义一致）。构建：`bash scripts/build.sh`（bun；缺 bun 时先 `npm i -g bun`）。测试：`node tests/test.mjs`（34 条；核心用例基于临时目录，实景扫描用例依赖本机 `.claude` 布局）。
 
 ## 配置（cordis.patch.yml 的 `config`）
 

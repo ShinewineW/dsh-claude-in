@@ -24,15 +24,11 @@ if [ -z "$CHECKOUT" ] || [ ! -d "$CHECKOUT/node_modules" ]; then
 fi
 echo "build: using DSH checkout at $CHECKOUT"
 
-# 确认运行时依赖就位：hook-protocol（自带）+ yaml（checkout 回落层）
+# 确认运行时依赖就位：hook-protocol（bundle 自带；yaml 已打包进 lib，无回落层依赖）
 if [ ! -d "$ROOT/node_modules/@deepseek-ai/dsh-hook-protocol" ]; then
   echo "build: installing bundled dependency @deepseek-ai/dsh-hook-protocol" >&2
   npm install --legacy-peer-deps --omit=dev || exit 1
 fi
-if [ ! -d "$CHECKOUT/node_modules/yaml" ]; then
-  echo "build: warning: yaml not found in checkout node_modules (runtime fallback will fail)" >&2
-fi
-
 BUN="${BUN:-$(command -v bun || true)}"
 if [ -n "$BUN" ]; then
   echo "=== Bundling src → lib (bun) ==="
@@ -41,8 +37,6 @@ if [ -n "$BUN" ]; then
     --outdir lib \
     --format=esm \
     --target=node \
-    --external 'cordis' \
-    --external 'yaml' \
     --external '@deepseek-ai/*'
 else
   echo "build: bun not found on PATH (install bun or set BUN=/path/to/bun)" >&2

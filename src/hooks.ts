@@ -20,7 +20,7 @@
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { homedir } from 'node:os'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage } from './compat.ts'
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   DEFAULT_STDERR_SUMMARY_MAX_CHARS,
