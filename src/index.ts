@@ -1,11 +1,12 @@
 /**
  * dsh-claude-in — 打开工作区时自动载入 `.claude` 配置。
  *
- * 在会话 cwd 向上发现最近的 `.claude` 项目根，然后：
- *  - CLAUDE.md   —— 可选注入（默认关闭：DSH 原生指令链已加载，见 README）；
+ * 在会话 cwd 只检查当前工作区根的 `.claude`（不向上探测），并固定附加用户级
+ * `~/.claude`，然后：
  *  - rules       —— `.claude/rules/**​/*.md`：always 规则进基线上下文，
  *                  paths/globs 规则在 read/write/edit 命中时按需注入；
- *  - skills      —— `.claude/skills/**​/SKILL.md` 注册为项目技能（rank 250）；
+ *  - skills      —— `.claude/skills/**​/SKILL.md` 与 `~/.claude/skills/**​/SKILL.md`
+ *                  注册为技能（对齐 Claude Code：personal 优先于 project）；
  *  - hooks       —— settings.json / settings.local.json / hooks.json 的 command
  *                  hooks 映射到 DSH seams（SessionStart / UserPromptSubmit /
  *                  PreToolUse / PostToolUse / Stop / SubagentStart / SubagentStop）；
@@ -15,13 +16,13 @@
  * 不复制、不改写工作区任何文件。
  * @module dsh-claude-in
  */
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import { statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { createUserMessage } from './compat.ts'
 import type { SkillRegistry } from '@deepseek-ai/dsh-skill'
-import { resolveConfig } from './config.ts'
-import type { Config, ResolvedConfig } from './config.ts'
+import { Config, resolveConfig } from './config.ts'
+import type { ResolvedConfig } from './config.ts'
 import { findClaudeRoot, findUserClaudeRoot } from './discovery.ts'
 import type { ClaudeRoot } from './discovery.ts'
 import { discoverRules, renderBaseline, matchingScoped, renderTouched, relPathOf } from './rules.ts'
@@ -34,8 +35,8 @@ import { loadAdaptConfig, mergeAdaptConfig } from './adapt.ts'
 import { errorMessage } from './frontmatter.ts'
 
 export const name = 'dsh-claude-in'
-export type { Config }
-export { resolveConfig }
+export const inject = ['skills', 'shell']
+export { Config, resolveConfig }
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {

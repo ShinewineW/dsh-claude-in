@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { splitFrontmatter } from '../src/frontmatter.ts'
 import { globToRegExp, globMatches } from '../src/glob.ts'
-import { discoverRules, matchingScoped, renderBaseline, renderTouched as renderTouchedFull, relPathOf } from '../src/rules.ts'
+import { discoverRules, renderBaseline, relPathOf } from '../src/rules.ts'
 import { findUserClaudeRoot } from '../src/discovery.ts'
 import { mergeAgents } from '../src/agents.ts'
 import { loadUserHookConfig } from '../src/hooks.ts'
@@ -12,8 +12,8 @@ import { discoverAgents, renderAgentCatalog, renderAgentDefinition } from '../sr
 import { parseClaudeConfig, loadHookConfig } from '../src/hooks.ts'
 import { loadAdaptConfig, mergeAdaptConfig, applyHookCommandOverrides } from '../src/adapt.ts'
 import { findClaudeRoot } from '../src/discovery.ts'
-import { resolveConfig } from '../src/config.ts'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { Config as ConfigSchema, resolveConfig } from '../src/config.ts'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -91,13 +91,11 @@ test('glob: **/*.py 任意深度', () => {
   assert.ok(!globMatches(['**/*.py'], 'x/y/z.ts'))
 })
 
-// ── wm-proj 真实 .claude ───────────────────────────────────────────────────
-const WM = '/mnt/volumes/infra-cloud-alg-su01/wangjiazhe/wm-proj'
-const wmRoot = findClaudeRoot(WM)
-
-test('discovery: wm-proj 工作区自身发现 .claude 根', () => {
-  assert.ok(wmRoot)
-  assert.equal(wmRoot.path, WM)
+test('config: 导出 Cordis schema，目录配置禁止绝对路径和穿越', () => {
+  assert.ok(ConfigSchema && ['object', 'function'].includes(typeof ConfigSchema))
+  assert.throws(() => resolveConfig({ claudeDir: '../outside' }), /claudeDir/)
+  assert.throws(() => resolveConfig({ adaptDir: '/tmp/dsn' }), /adaptDir/)
+  assert.throws(() => resolveConfig({ hookTimeoutMs: 0 }), /hookTimeoutMs/)
 })
 
 test('discovery: 不向上漂移（子目录开会话不带上父目录 .claude）', () => {
@@ -109,59 +107,40 @@ test('discovery: 不向上漂移（子目录开会话不带上父目录 .claude�
   rmSync(dir, { recursive: true, force: true })
 })
 
-if (wmRoot) {
+// 可选的真实工作区回归样本。默认关闭，避免对私有环境产生硬依赖。
+const fixturePath = process.env.DSH_CLAUDE_IN_FIXTURE
+const fixtureRoot = fixturePath ? findClaudeRoot(fixturePath) : undefined
+
+if (fixturePath && fixtureRoot) {
+  test('discovery: 真实工作区自身发现 .claude 根', () => {
+    assert.equal(fixtureRoot.path, realpathSync(fixturePath))
+  })
+
   const config = resolveConfig({})
-  const discovery = discoverRules(wmRoot.claudeDir, {
+  const discovery = discoverRules(fixtureRoot.claudeDir, {
     maxSourceBytes: config.ruleMaxSourceBytes,
     importMaxDepth: config.ruleImportMaxDepth,
     defaultAlwaysApply: config.defaultAlwaysApply,
     warn: (m) => console.log('  [warn]', m),
   })
 
-  test('rules: wm-proj 扫描到 >30 条规则', () => {
-    assert.ok(discovery.rules.length > 30, `got ${discovery.rules.length}`)
-  })
-
-  test('rules: routing.md 是 path-scoped（helloworld/**）', () => {
-    const routing = discovery.rules.find((r) => r.relPath === 'helloworld/routing.md')
-    assert.ok(routing, 'routing.md not found')
-    assert.equal(routing.alwaysApply, false)
-    assert.deepEqual(routing.globs, ['helloworld/**', 'docs/helloworld/**'])
-  })
-
-  test('rules: 02-destructive-ops-cwd-safety.md 无 frontmatter → always', () => {
-    const rule = discovery.rules.find((r) => r.relPath === '02-destructive-ops-cwd-safety.md')
-    assert.ok(rule, 'rule not found')
-    assert.equal(rule.alwaysApply, true)
-    assert.match(rule.content, /Destructive Ops Safety/)
-  })
-
-  test('rules: 命中 helloworld 文件的 path-scoped 规则', () => {
-    const hits = matchingScoped(discovery.scoped, 'helloworld/scripts/train.py')
-    assert.ok(hits.some((r) => r.relPath === 'helloworld/routing.md'))
-  })
-
-  test('rules: README.md 命中的全部规则标签都在渲染文本里（截断不丢规则）', () => {
-    const hits = matchingScoped(discovery.scoped, 'helloworld/README.md')
-    assert.ok(hits.length >= 4, `expected >=4 hits, got ${hits.length}`)
-    const { renderTouched } = null ?? {}
-    const text = renderTouchedFull(hits, wmRoot.path, 'helloworld/README.md', config.rulesMaxBytes)
-    for (const rule of hits) {
-      assert.ok(text.includes(`name="${rule.name}"`), `missing rule tag: ${rule.name}`)
+  test('rules: 真实工作区中的规则都具备规范化路径', () => {
+    for (const rule of discovery.rules) {
+      assert.ok(rule.relPath.endsWith('.md'), `unexpected rule path: ${rule.relPath}`)
+      assert.ok(!rule.relPath.startsWith('../'), `rule escaped root: ${rule.relPath}`)
     }
   })
 
   test('rules: renderBaseline 含 always 规则且在预算内', () => {
-    const text = renderBaseline(discovery, wmRoot.path, config.rulesMaxBytes)
-    assert.ok(text.includes('<claude_workspace_rules>'))
+    const text = renderBaseline(discovery, fixtureRoot.path, config.rulesMaxBytes)
+    if (discovery.always.length > 0) assert.ok(text.includes('<claude_workspace_rules>'))
     assert.ok(Buffer.byteLength(text, 'utf8') <= config.rulesMaxBytes + 8192)
     console.log(`  [info] baseline ${Buffer.byteLength(text, 'utf8')} bytes; always=${discovery.always.length} scoped=${discovery.scoped.length} requestable=${discovery.requestable.length}`)
   })
 
-  test('skills: wm-proj .claude/skills 扫描（9 个）', () => {
-    const skills = discoverClaudeSkills(wmRoot.claudeDir, { skills: true, agents: true }, (m) => console.log('  [warn]', m))
+  test('skills: 真实工作区 skill 候选均有效', () => {
+    const skills = discoverClaudeSkills(fixtureRoot.claudeDir, { skills: true, agents: true }, (m) => console.log('  [warn]', m))
     const real = skills.filter((s) => s.locator.kind === 'skill')
-    assert.ok(real.length >= 9, `got ${real.length}`)
     for (const s of real) {
       assert.ok(/^[a-z0-9][a-z0-9-]*$/.test(s.name), `invalid skill name ${s.name}`)
       assert.ok(s.description.length > 0, `${s.name} has empty description`)
@@ -172,6 +151,10 @@ if (wmRoot) {
   test('relPathOf: 根外路径返回 undefined', () => {
     assert.equal(relPathOf('/a/b', '/a/c/x.py'), undefined)
     assert.equal(relPathOf('/a/b', '/a/b/x.py'), 'x.py')
+  })
+} else {
+  test('fixture: 可选真实工作区回归样本默认跳过', () => {
+    assert.ok(true)
   })
 }
 
@@ -237,15 +220,30 @@ test('hooks: 坏正则 matcher 抛 SyntaxError', () => {
   )
 })
 
-test('hooks: loadHookConfig 合并 settings.local 覆盖 settings', () => {
+test('hooks: loadHookConfig 合并 settings.local 追加 settings', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dci-hooks-'))
   mkdirSync(join(dir, '.claude'), { recursive: true })
   writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: 'echo base' }] }], PostToolUse: [{ hooks: [{ type: 'command', command: 'echo post' }] }] } }))
   writeFileSync(join(dir, '.claude', 'settings.local.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: 'echo local' }] }] } }))
   const loaded = loadHookConfig(join(dir, '.claude'), dir)
   assert.ok(loaded)
-  assert.equal(loaded.events.PreToolUse[0].hooks[0].command, 'echo local')
+  assert.equal(loaded.events.PreToolUse.length, 2)
+  assert.equal(loaded.events.PreToolUse[0].hooks[0].command, 'echo base')
+  assert.equal(loaded.events.PreToolUse[1].hooks[0].command, 'echo local')
   assert.equal(loaded.events.PostToolUse[0].hooks[0].command, 'echo post')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('skills: user 级 skill 与项目同名时 user 优先', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dci-skill-pri-'))
+  mkdirSync(join(dir, '.claude', 'skills', 'deploy'), { recursive: true })
+  mkdirSync(join(dir, 'home', '.claude', 'skills', 'deploy'), { recursive: true })
+  writeFileSync(join(dir, '.claude', 'skills', 'deploy', 'SKILL.md'), '---\ndescription: project deploy\n---\n# project\n')
+  writeFileSync(join(dir, 'home', '.claude', 'skills', 'deploy', 'SKILL.md'), '---\ndescription: user deploy\n---\n# user\n')
+  const skills = discoverClaudeSkills(join(dir, '.claude'), { skills: true, agents: false }, undefined, undefined, join(dir, 'home', '.claude'))
+  assert.equal(skills.length, 1)
+  assert.equal(skills[0].source, 'user-claude')
+  assert.equal(skills[0].rank, 250)
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -291,8 +289,20 @@ test('discovery: findUserClaudeRoot 读 HOME/.claude', () => {
   mkdirSync(join(dir, '.claude'), { recursive: true })
   const userRoot = findUserClaudeRoot(dir)
   assert.ok(userRoot)
-  assert.equal(userRoot.path, dir)
+  assert.equal(userRoot.path, realpathSync(dir))
   assert.equal(findUserClaudeRoot(join(dir, 'nope')), undefined)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('skills: 显式符号链接仍从 .claude 入口加载', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dci-skill-link-'))
+  mkdirSync(join(dir, '.claude', 'skills'), { recursive: true })
+  mkdirSync(join(dir, 'outside', 'linked-skill'), { recursive: true })
+  writeFileSync(join(dir, 'outside', 'linked-skill', 'SKILL.md'), '---\nname: linked-skill\ndescription: desc\n---\nbody\n')
+  symlinkSync(join(dir, 'outside', 'linked-skill'), join(dir, '.claude', 'skills', 'linked-skill'))
+  const skills = discoverClaudeSkills(join(dir, '.claude'), { skills: true, agents: false })
+  assert.equal(skills.length, 1)
+  assert.equal(skills[0].name, 'linked-skill')
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -319,7 +329,7 @@ test('agents: mergeAgents 项目同名优先', () => {
   assert.equal(merged[1].name, 'architect')
 })
 
-test('skills: 项目级 + 用户级扫描，同名项目优先、用户独有进入', () => {
+test('skills: 项目级 + 用户级扫描，同名用户优先、用户独有进入', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dci-dual-'))
   mkdirSync(join(dir, 'proj', '.claude', 'skills', 'shared'), { recursive: true })
   mkdirSync(join(dir, 'home', '.claude', 'skills', 'shared'), { recursive: true })
@@ -331,12 +341,12 @@ test('skills: 项目级 + 用户级扫描，同名项目优先、用户独有进
   const names = found.map((s) => s.name)
   assert.deepEqual(names, ['shared', 'user-only'])
   const shared = found.find((s) => s.name === 'shared')
-  assert.equal(shared.description, 'project version')
-  assert.equal(shared.source, 'project-claude')
+  assert.equal(shared.description, 'user version')
+  assert.equal(shared.source, 'user-claude')
   assert.equal(shared.rank, 250)
   const userOnly = found.find((s) => s.name === 'user-only')
   assert.equal(userOnly.source, 'user-claude')
-  assert.equal(userOnly.rank, 450)
+  assert.equal(userOnly.rank, 250)
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -347,6 +357,19 @@ test('hooks: loadUserHookConfig 从 HOME/.claude 读取', () => {
   const loaded = loadUserHookConfig(dir)
   assert.ok(loaded)
   assert.equal(loaded.events.PreToolUse[0].hooks[0].command, 'echo u')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('hooks: 用户级 CLAUDE_PROJECT_DIR 按当前项目解析', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dci-uhooks-project-'))
+  const project = join(dir, 'project')
+  mkdirSync(join(dir, '.claude'), { recursive: true })
+  mkdirSync(project, { recursive: true })
+  writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'echo "${CLAUDE_PROJECT_DIR}"' }] }] } }))
+  const loaded = loadUserHookConfig(dir, undefined, project)
+  assert.ok(loaded)
+  assert.equal(loaded.root, project)
+  assert.equal(loaded.events.PreToolUse[0].hooks[0].command, `echo "${project}"`)
   rmSync(dir, { recursive: true, force: true })
 })
 

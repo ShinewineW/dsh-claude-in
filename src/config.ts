@@ -1,7 +1,9 @@
 /**
- * 插件配置（普通对象 + 默认值解析，不引入 schema 依赖）。
+ * 插件配置与 Cordis 运行时 schema。
  * @module dsh-claude-in/config
  */
+import { isAbsolute } from 'node:path'
+import z from '@deepseek-ai/schemastery'
 
 export interface Config {
   /** 总开关。默认 true。 */
@@ -18,7 +20,7 @@ export interface Config {
   ruleMaxSourceBytes?: number
   /** `@import` 展开最大深度。默认 8。 */
   ruleImportMaxDepth?: number
-  /** 无 frontmatter、且无 paths/globs 的规则默认视为 alwaysApply。默认 true（wm-proj 约定）。 */
+  /** 无 frontmatter、且无 paths/globs 的规则默认视为 alwaysApply。默认 true。 */
   defaultAlwaysApply?: boolean
   /** 载入 `.claude/skills/**​/SKILL.md`。默认 true。 */
   loadSkills?: boolean
@@ -36,6 +38,23 @@ export interface Config {
   /** hook stderr 摘要字符上限。默认 500。 */
   stderrSummaryMaxChars?: number
 }
+
+/** Cordis 在插件加载前用这个 schema 校验配置并填充默认值。 */
+export const Config: z<Config> = z.object({
+  enabled: z.boolean().default(true),
+  claudeDir: z.string().default('.claude'),
+  adaptDir: z.string().default('.dsn'),
+  loadRules: z.boolean().default(true),
+  rulesMaxBytes: z.number().default(131072),
+  ruleMaxSourceBytes: z.number().default(65536),
+  ruleImportMaxDepth: z.number().default(8),
+  defaultAlwaysApply: z.boolean().default(true),
+  loadSkills: z.boolean().default(true),
+  loadAgents: z.boolean().default(true),
+  loadHooks: z.boolean().default(true),
+  hookTimeoutMs: z.number().default(600000),
+  stderrSummaryMaxChars: z.number().default(500),
+})
 
 export interface ResolvedConfig {
   enabled: boolean
@@ -70,8 +89,22 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
 }
 
 export function resolveConfig(raw: Config | undefined): ResolvedConfig {
-  return {
+  const resolved = {
     ...DEFAULT_CONFIG,
     ...(raw ?? {}),
+  }
+  assertDirectoryName('claudeDir', resolved.claudeDir)
+  assertDirectoryName('adaptDir', resolved.adaptDir)
+  for (const key of ['rulesMaxBytes', 'ruleMaxSourceBytes', 'ruleImportMaxDepth', 'hookTimeoutMs', 'stderrSummaryMaxChars'] as const) {
+    if (!Number.isSafeInteger(resolved[key]) || resolved[key] < 1) {
+      throw new Error(`dsh-claude-in: ${key} must be a positive safe integer`)
+    }
+  }
+  return resolved
+}
+
+function assertDirectoryName(key: 'claudeDir' | 'adaptDir', value: string): void {
+  if (value === '' || value === '.' || value === '..' || isAbsolute(value) || value.includes('/') || value.includes('\\')) {
+    throw new Error(`dsh-claude-in: ${key} must be one relative directory name`)
   }
 }

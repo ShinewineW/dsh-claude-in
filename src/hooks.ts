@@ -33,7 +33,7 @@ import {
   runHook,
 } from '@deepseek-ai/dsh-hook-protocol'
 import type { CommandHook, MatcherGroup } from '@deepseek-ai/dsh-hook-protocol'
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import { findClaudeRoot } from './discovery.ts'
 import type { ResolvedConfig } from './config.ts'
@@ -142,13 +142,17 @@ export function loadHookConfig(claudeDir: string, root: string, warn?: (m: strin
   }
   if (sources.length === 0) return undefined
 
-  // 按事件合并：hooks.json < settings.json < settings.local.json
+  // 按事件追加：hooks.json < settings.json < settings.local.json
   const merged: Record<string, unknown> = {}
   for (const source of sources) {
     const raw = asObject(source.raw)
     const hooks = raw ? (asObject(raw.hooks) ?? raw) : undefined
     if (!hooks) continue
-    for (const [event, value] of Object.entries(hooks)) merged[event] = value
+    for (const [event, value] of Object.entries(hooks)) {
+      if (!Array.isArray(value)) continue
+      const prev = merged[event]
+      merged[event] = Array.isArray(prev) ? [...prev, ...value] : value
+    }
   }
 
   const vars = { pluginRoot: root, projectDir: root }
@@ -166,11 +170,11 @@ export function loadHookConfig(claudeDir: string, root: string, warn?: (m: strin
   }
 }
 
-/** 用户级 `~/.claude` hook 配置（全局生效，CC 语义）。 */
-export function loadUserHookConfig(home = homedir(), warn?: (m: string) => void): HookConfig | undefined {
+/** 用户级 `~/.claude` hook 配置（全局生效；命令在当前项目上下文中解析）。 */
+export function loadUserHookConfig(home = homedir(), warn?: (m: string) => void, projectDir = home): HookConfig | undefined {
   const claudeDir = join(home, '.claude')
   if (!existsSync(claudeDir)) return undefined
-  return loadHookConfig(claudeDir, home, warn)
+  return loadHookConfig(claudeDir, projectDir, warn)
 }
 
 /** 用户级 hook 配置源文件指纹（缓存失效依据）。 */
@@ -238,10 +242,11 @@ export function applyHooks(ctx: Context, config: ResolvedConfig): void {
     // 用户级（全局；无项目 .claude 时也生效）
     let userConfig: HookConfig | undefined
     {
-      const fingerprint = userHookFingerprint(home)
+      const executionRoot = root?.path ?? cwd
+      const fingerprint = `${executionRoot}:${userHookFingerprint(home)}`
       const cached = userConfigCache.get(fingerprint)
       userConfig = cached !== undefined ? cached : (() => {
-        const loaded = loadUserHookConfig(home, warn)
+        const loaded = loadUserHookConfig(home, warn, executionRoot)
         userConfigCache.set(fingerprint, loaded)
         return loaded
       })()

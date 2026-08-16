@@ -2,7 +2,7 @@
  * `.claude/rules/**​/*.md` 发现、@import 展开与渲染。
  * 纯函数 + node:fs，不依赖 DSH 运行时（可单测）。
  *
- * Claude Code 规则语义（适配 wm-proj 约定）：
+ * Claude Code 规则语义：
  *  - `alwaysApply: true` → 基线注入；
  *  - `paths` / `globs` → 文件命中时按需注入；
  *  - 两者皆无 → 默认 alwaysApply（可配 defaultAlwaysApply=false 改为“按需列出”）；

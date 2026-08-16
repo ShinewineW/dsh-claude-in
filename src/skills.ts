@@ -1,6 +1,6 @@
 /**
  * `ctx.skills` 注册 provider：把 `.claude/skills/**​/SKILL.md` 与
- * `.claude/agents/**​/*.md` 作为项目技能暴露（cwd 敏感，向上发现项目根）。
+ * `.claude/agents/**​/*.md` 作为项目技能暴露（cwd 敏感，只检查当前工作区根）。
  * 不复制文件——`get()` 直接读源 SKILL.md / agent 定义。
  * @module dsh-claude-in/skills
  */
@@ -20,14 +20,14 @@ import { loadAdaptConfig, mergeAdaptConfig } from './adapt.ts'
 import { renderAgentDefinition } from './agents.ts'
 
 export const PROVIDER_NAME = 'dsh-claude-in'
-/** 项目 `.dsh/skills`(100)/`.agents/skills`(200) 之下：`.dsn/skills` 适配层(240) < `.claude/skills`(250)。 */
+/** 项目 `.dsh/skills`(100)/`.agents/skills`(200) 之下：`.dsn/skills` 适配层(240) 最靠前。 */
 const DSN_SKILLS_RANK = 240
-/** 项目 `.claude/skills` 的 rank：低于 `.dsh/skills`(100)/`.agents/skills`(200)，高于 custom(300)/user(400/500)。 */
-const CLAUDE_SKILLS_RANK = 250
+/** 个人 `~/.claude/skills` 的 rank：Claude 官方语义里 personal 覆盖 project。 */
+const USER_SKILLS_RANK = 250
+/** 项目 `.claude/skills` 的 rank：低于 personal。 */
+const CLAUDE_SKILLS_RANK = 450
 /** 项目 agents-as-skill 的 rank。 */
 const CLAUDE_AGENTS_RANK = 260
-/** 用户级 `~/.claude/skills` 的 rank：低于项目级(250)/custom(300)/user-dsh(400)，高于 user-agents(500)。 */
-const USER_SKILLS_RANK = 450
 /** 用户级 agents-as-skill 的 rank。 */
 const USER_AGENTS_RANK = 460
 
@@ -54,9 +54,9 @@ export interface DiscoveredClaudeSkill {
  * 扫描 skills 与 agents（由 provider.list 调用）。
  * 层级与优先级（数字越小越优先，同名后者被去重）：
  *  - adaptSkillsDir（`.dsn/skills`）rank 240（DSH 适配层）
- *  - 项目级 `.claude/skills` rank 250、`.claude/agents` rank 260
- *  - 用户级 `~/.claude/skills` rank 450、`~/.claude/agents` rank 460
- * 项目级同名覆盖用户级（Claude Code 语义：项目优先）。
+ *  - 用户级 `~/.claude/skills` rank 250（Claude Code 语义：personal 优先于 project）
+ *  - 项目级 `.claude/skills` rank 450
+ *  - `.claude/agents` / `~/.claude/agents` 保持 project > user
  */
 export function discoverClaudeSkills(
   claudeDir: string | undefined,
@@ -112,6 +112,7 @@ export function discoverClaudeSkills(
       }
     }
   }
+  found.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name) || a.locator.absPath.localeCompare(b.locator.absPath))
   const known = new Set<string>()
   const result: DiscoveredClaudeSkill[] = []
   for (const entry of found) {
