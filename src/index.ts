@@ -94,7 +94,6 @@ export function apply(ctx: Context, raw?: Config): void {
   // ── 会话状态与基线缓存 ─────────────────────────────────────────────────
   const sessions = new WeakMap<object, SessionState>()
   const contextGate = createDeferredContextGate()
-  ctx.on('session/event', (session, event) => contextGate.observe(session, event))
 
   interface BaselineCacheEntry {
     state: SessionState
@@ -201,20 +200,36 @@ export function apply(ctx: Context, raw?: Config): void {
         claudeRoot: state.root?.path ?? state.userRoot?.path,
       },
     })
-    const injected = contextGate.inject(agent, message)
+    contextGate.defer(agent, message)
     const roots = [state.root?.claudeDir, state.userRoot?.claudeDir].filter((p): p is string => p !== undefined).join(' + ')
-    ctx.logger.info(`dsh-claude-in: ${injected ? 'injected' : 'deferred'} baseline (.claude: ${roots}; rules=${state.discovery.rules.length}, agents=${state.agents.length})`)
+    ctx.logger.info(`dsh-claude-in: deferred baseline (.claude: ${roots}; rules=${state.discovery.rules.length}, agents=${state.agents.length})`)
   }
 
   if (config.loadRules || config.loadAgents) {
-    ctx.on('agent/session-start', ({ agent }) => {
+    const prepareBaseline = (agent: any): void => {
       try {
         contextGate.attach(agent)
         injectBaseline(agent)
       } catch (error) {
         warn(`dsh-claude-in: baseline injection failed: ${errorMessage(error)}`)
       }
+    }
+
+    ctx.on('agent/session-start', ({ agent }) => {
+      prepareBaseline(agent)
     })
+
+    // Dynamic plugin mounts can miss agent/session-start for an agent that is
+    // created in the same host lifecycle. The first pre-step is the reliable
+    // fallback seam; the gate still queues this baseline for request #2.
+    ctx.on('agent/pre-step', async ({ agent }, next) => {
+      const ready = contextGate.beginRequest(agent)
+      if (!sessions.has(agent.session)) prepareBaseline(agent)
+      const decision = await next()
+      if (!ready || decision.kind !== 'enter') return decision
+      const deferred = contextGate.drain(agent)
+      return deferred.length === 0 ? decision : { ...decision, messages: [...decision.messages, ...deferred] }
+    }, { prepend: true })
   }
 
   // ── path-scoped 规则：read/write/edit 命中文件时注入 ────────────────────

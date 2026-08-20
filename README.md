@@ -69,7 +69,7 @@ Symbolic links within discovered Skill and Agent trees are followed. Rule `@impo
 
 ### First-request context timing
 
-The plugin keeps the first model request free of plugin-supplied context. Until the session records its first durable `assistant/message` or `tool/call`, the Rule and Agent catalog baseline and any early Hook `additionalContext` are queued. After that event, the queued context is injected for the next model request.
+For a new session, the plugin keeps model request #1 free of plugin-supplied context. The Rule and Agent catalog baseline and any early Hook `additionalContext` are queued while that request runs, then included directly in model request #2. A resumed session whose existing history already contains a durable `assistant/message` or `tool/call` is treated as already past request #1, so its queued context can be included in the next model request.
 
 This delay applies only to model-context injection. Skill and Agent registration remains active, and Hooks still run and enforce their decisions. The gate is global to the plugin and preset-agnostic; it supports `anchored-standard`, `router-suite`, and `router-standard`.
 

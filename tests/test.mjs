@@ -108,37 +108,42 @@ test('discovery: 不向上漂移（子目录开会话不带上父目录 .claude�
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('context gate: 首个模型请求前排队，assistant/message 后为下一请求注入', () => {
-  const session = { events: [] }
+test('context gate: 首个模型请求前排队，第二个模型请求直接注入', () => {
+  const session = { id: 'session-first', events: [] }
   const injected = []
   const agent = { session, inject: (message) => injected.push(message) }
   const gate = createDeferredContextGate()
   gate.attach(agent)
+  assert.equal(gate.beginRequest(agent), false)
   assert.equal(gate.ready(agent), false)
   assert.equal(gate.inject(agent, 'baseline'), false)
   assert.deepEqual(injected, [])
-  gate.observe(session, { type: 'assistant/message' })
+  assert.equal(gate.beginRequest(agent), true)
   assert.equal(gate.ready(agent), true)
-  assert.deepEqual(injected, ['baseline'])
+  assert.deepEqual(gate.drain(agent), ['baseline'])
+  assert.deepEqual(injected, [])
   assert.equal(gate.inject(agent, 'later'), true)
-  assert.deepEqual(injected, ['baseline', 'later'])
+  assert.deepEqual(injected, ['later'])
 })
 
-test('context gate: tool/call 同样晋升且恢复会话不重复延迟', () => {
+test('context gate: tool/call 历史使恢复会话不重复延迟', () => {
   const gate = createDeferredContextGate()
-  const session = { events: [] }
+  const session = { id: 'session-tool', events: [] }
   const injected = []
   const agent = { session, inject: (message) => injected.push(message) }
   gate.attach(agent)
+  gate.beginRequest(agent)
   gate.inject(agent, 'hook-context')
-  gate.observe(session, { type: 'tool/call' })
-  gate.observe(session, { type: 'assistant/message' })
-  assert.deepEqual(injected, ['hook-context'])
+  session.events.push({ type: 'tool/call' })
+  assert.equal(gate.beginRequest(agent), true)
+  assert.deepEqual(gate.drain(agent), ['hook-context'])
+  assert.deepEqual(injected, [])
 
-  const resumedSession = { events: [{ type: 'assistant/message' }] }
+  const resumedSession = { id: 'session-resumed', events: [{ type: 'assistant/message' }] }
   const resumedInjected = []
   const resumedAgent = { session: resumedSession, inject: (message) => resumedInjected.push(message) }
   gate.attach(resumedAgent)
+  assert.equal(gate.beginRequest(resumedAgent), true)
   assert.equal(gate.inject(resumedAgent, 'baseline'), true)
   assert.deepEqual(resumedInjected, ['baseline'])
 })

@@ -1,21 +1,24 @@
 /**
  * Keep dsh-claude-in context out of the first model request.
  *
- * A session becomes ready after its first durable assistant output or tool
- * call. Context queued before that point is injected for the next request.
+ * A session becomes ready on its second pre-step. Durable assistant output or
+ * a tool call also marks a resumed session ready. Queued context is then
+ * returned to the caller for direct inclusion in that model request.
  */
 
 export interface DeferredContextGate {
   attach(agent: any): void
-  observe(session: any, event: any): void
+  beginRequest(agent: any): boolean
   ready(agent: any): boolean
+  defer(agent: any, message: any): void
+  drain(agent: any): any[]
   inject(agent: any, message: any): boolean
 }
 
 const PROMOTION_EVENTS = new Set(['assistant/message', 'tool/call'])
 
-function isObject(value: unknown): value is object {
-  return typeof value === 'object' && value !== null
+function sessionKey(session: any): string | undefined {
+  return typeof session?.id === 'string' && session.id.length > 0 ? session.id : undefined
 }
 
 function alreadyPromoted(session: any): boolean {
@@ -23,50 +26,62 @@ function alreadyPromoted(session: any): boolean {
 }
 
 export function createDeferredContextGate(): DeferredContextGate {
-  const agents = new WeakMap<object, any>()
-  const promoted = new WeakSet<object>()
-  const pending = new WeakMap<object, any[]>()
-
-  const promote = (session: object): void => {
-    if (promoted.has(session)) return
-    promoted.add(session)
-    const agent = agents.get(session)
-    const messages = pending.get(session)
-    pending.delete(session)
-    if (agent === undefined || messages === undefined) return
-    for (const message of messages) agent.inject(message)
-  }
+  const seenRequest = new Set<string>()
+  const promoted = new Set<string>()
+  const pending = new Map<string, any[]>()
 
   return {
     attach(agent: any): void {
       const session = agent?.session
-      if (!isObject(session)) return
-      agents.set(session, agent)
-      if (alreadyPromoted(session)) promote(session)
+      const key = sessionKey(session)
+      if (key === undefined) return
+      if (alreadyPromoted(session)) promoted.add(key)
     },
 
-    observe(session: any, event: any): void {
-      if (!isObject(session) || !PROMOTION_EVENTS.has(event?.type)) return
-      promote(session)
+    beginRequest(agent: any): boolean {
+      const session = agent?.session
+      const key = sessionKey(session)
+      if (key === undefined) return false
+      if (promoted.has(key) || alreadyPromoted(session) || seenRequest.has(key)) {
+        promoted.add(key)
+        return true
+      }
+      seenRequest.add(key)
+      return false
     },
 
     ready(agent: any): boolean {
       const session = agent?.session
-      return isObject(session) && (promoted.has(session) || alreadyPromoted(session))
+      const key = sessionKey(session)
+      return key !== undefined && (promoted.has(key) || alreadyPromoted(session))
+    },
+
+    defer(agent: any, message: any): void {
+      const key = sessionKey(agent?.session)
+      if (key === undefined) return
+      const messages = pending.get(key)
+      if (messages === undefined) pending.set(key, [message])
+      else messages.push(message)
+    },
+
+    drain(agent: any): any[] {
+      const key = sessionKey(agent?.session)
+      if (key === undefined || !promoted.has(key)) return []
+      const messages = pending.get(key) ?? []
+      pending.delete(key)
+      return messages
     },
 
     inject(agent: any, message: any): boolean {
       const session = agent?.session
-      if (!isObject(session)) return false
-      agents.set(session, agent)
-      if (promoted.has(session) || alreadyPromoted(session)) {
-        promote(session)
+      const key = sessionKey(session)
+      if (key === undefined) return false
+      if (promoted.has(key) || alreadyPromoted(session)) {
+        promoted.add(key)
         agent.inject(message)
         return true
       }
-      const messages = pending.get(session)
-      if (messages === undefined) pending.set(session, [message])
-      else messages.push(message)
+      this.defer(agent, message)
       return false
     },
   }

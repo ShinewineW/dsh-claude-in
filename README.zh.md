@@ -71,7 +71,7 @@ dsh plugin --profile web add ./dsh-claude-in-0.1.0.tgz
 
 ### 首次模型请求的上下文时序
 
-插件不会向首次模型请求加入自身提供的上下文。在会话记录第一条持久化的 `assistant/message` 或 `tool/call` 之前，Rule 与 Agent 目录基线以及早期 Hook 产生的 `additionalContext` 都会进入等待队列；该事件发生后，队列中的上下文才会注入，并从下一次模型请求开始生效。
+对于新会话，插件不会向模型请求 #1 加入自身提供的上下文。Rule 与 Agent 目录基线以及早期 Hook 产生的 `additionalContext` 会在该请求期间进入等待队列，然后直接包含在模型请求 #2 中。如果恢复会话的现有历史已经包含持久化的 `assistant/message` 或 `tool/call`，插件会将其视为已经完成请求 #1，因此队列中的上下文可以直接包含在下一次模型请求中。
 
 这一延迟只影响模型上下文注入。Skill 与 Agent 注册仍然有效，Hooks 也会照常执行并强制实施其决策。该门控在插件中全局生效，不依赖 preset，支持 `anchored-standard`、`router-suite` 和 `router-standard`。
 
