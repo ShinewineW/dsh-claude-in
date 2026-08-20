@@ -13,6 +13,7 @@ import { parseClaudeConfig, loadHookConfig } from '../src/hooks.ts'
 import { loadAdaptConfig, mergeAdaptConfig, applyHookCommandOverrides } from '../src/adapt.ts'
 import { findClaudeRoot } from '../src/discovery.ts'
 import { Config as ConfigSchema, resolveConfig } from '../src/config.ts'
+import { createDeferredContextGate } from '../src/context-gate.ts'
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -105,6 +106,41 @@ test('discovery: 不向上漂移（子目录开会话不带上父目录 .claude�
   assert.equal(findClaudeRoot(join(dir, 'ws', 'sub')), undefined)
   assert.ok(findClaudeRoot(join(dir, 'ws')))
   rmSync(dir, { recursive: true, force: true })
+})
+
+test('context gate: 首个模型请求前排队，assistant/message 后为下一请求注入', () => {
+  const session = { events: [] }
+  const injected = []
+  const agent = { session, inject: (message) => injected.push(message) }
+  const gate = createDeferredContextGate()
+  gate.attach(agent)
+  assert.equal(gate.ready(agent), false)
+  assert.equal(gate.inject(agent, 'baseline'), false)
+  assert.deepEqual(injected, [])
+  gate.observe(session, { type: 'assistant/message' })
+  assert.equal(gate.ready(agent), true)
+  assert.deepEqual(injected, ['baseline'])
+  assert.equal(gate.inject(agent, 'later'), true)
+  assert.deepEqual(injected, ['baseline', 'later'])
+})
+
+test('context gate: tool/call 同样晋升且恢复会话不重复延迟', () => {
+  const gate = createDeferredContextGate()
+  const session = { events: [] }
+  const injected = []
+  const agent = { session, inject: (message) => injected.push(message) }
+  gate.attach(agent)
+  gate.inject(agent, 'hook-context')
+  gate.observe(session, { type: 'tool/call' })
+  gate.observe(session, { type: 'assistant/message' })
+  assert.deepEqual(injected, ['hook-context'])
+
+  const resumedSession = { events: [{ type: 'assistant/message' }] }
+  const resumedInjected = []
+  const resumedAgent = { session: resumedSession, inject: (message) => resumedInjected.push(message) }
+  gate.attach(resumedAgent)
+  assert.equal(gate.inject(resumedAgent, 'baseline'), true)
+  assert.deepEqual(resumedInjected, ['baseline'])
 })
 
 // 可选的真实工作区回归样本。默认关闭，避免对私有环境产生硬依赖。

@@ -67,6 +67,12 @@ Parent directories and unrelated filesystem locations are not scanned. A session
 
 Symbolic links within discovered Skill and Agent trees are followed. Rule `@import` directives may also resolve files or directories outside the discovery roots. These are explicit asset references, not additional discovery locations.
 
+### First-request context timing
+
+The plugin keeps the first model request free of plugin-supplied context. Until the session records its first durable `assistant/message` or `tool/call`, the Rule and Agent catalog baseline and any early Hook `additionalContext` are queued. After that event, the queued context is injected for the next model request.
+
+This delay applies only to model-context injection. Skill and Agent registration remains active, and Hooks still run and enforce their decisions. The gate is global to the plugin and preset-agnostic; it supports `anchored-standard`, `router-suite`, and `router-standard`.
+
 ### Rules
 
 Rules without `paths` or `globs` are included in the session baseline by default. `alwaysApply: true` provides the same behavior explicitly. Path-scoped Rules are matched when DSH `read`, `write`, or `edit` tools touch a file and are injected once per session after the matching tool result.

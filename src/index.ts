@@ -33,6 +33,7 @@ import type { ClaudeAgent } from './agents.ts'
 import { applyHooks } from './hooks.ts'
 import { loadAdaptConfig, mergeAdaptConfig } from './adapt.ts'
 import { errorMessage } from './frontmatter.ts'
+import { createDeferredContextGate } from './context-gate.ts'
 
 export const name = 'dsh-claude-in'
 export const inject = ['skills', 'shell']
@@ -92,6 +93,8 @@ export function apply(ctx: Context, raw?: Config): void {
 
   // ── 会话状态与基线缓存 ─────────────────────────────────────────────────
   const sessions = new WeakMap<object, SessionState>()
+  const contextGate = createDeferredContextGate()
+  ctx.on('session/event', (session, event) => contextGate.observe(session, event))
 
   interface BaselineCacheEntry {
     state: SessionState
@@ -198,14 +201,15 @@ export function apply(ctx: Context, raw?: Config): void {
         claudeRoot: state.root?.path ?? state.userRoot?.path,
       },
     })
-    agent.inject(message)
+    const injected = contextGate.inject(agent, message)
     const roots = [state.root?.claudeDir, state.userRoot?.claudeDir].filter((p): p is string => p !== undefined).join(' + ')
-    ctx.logger.info(`dsh-claude-in: injected baseline (.claude: ${roots}; rules=${state.discovery.rules.length}, agents=${state.agents.length})`)
+    ctx.logger.info(`dsh-claude-in: ${injected ? 'injected' : 'deferred'} baseline (.claude: ${roots}; rules=${state.discovery.rules.length}, agents=${state.agents.length})`)
   }
 
   if (config.loadRules || config.loadAgents) {
     ctx.on('agent/session-start', ({ agent }) => {
       try {
+        contextGate.attach(agent)
         injectBaseline(agent)
       } catch (error) {
         warn(`dsh-claude-in: baseline injection failed: ${errorMessage(error)}`)
@@ -266,7 +270,7 @@ export function apply(ctx: Context, raw?: Config): void {
     if (ctx.get('shell') === undefined) {
       warn('dsh-claude-in: ctx.shell unavailable — hooks skipped')
     } else {
-      applyHooks(ctx, config)
+      applyHooks(ctx, config, contextGate)
     }
   }
 }

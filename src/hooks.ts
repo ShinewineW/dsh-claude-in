@@ -34,6 +34,7 @@ import {
 } from '@deepseek-ai/dsh-hook-protocol'
 import type { CommandHook, MatcherGroup } from '@deepseek-ai/dsh-hook-protocol'
 import type { Context } from '@deepseek-ai/cordis'
+import type { DeferredContextGate } from './context-gate.ts'
 import type { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import { findClaudeRoot } from './discovery.ts'
 import type { ResolvedConfig } from './config.ts'
@@ -205,7 +206,7 @@ function sessionInRoot(cwd: string | undefined, root: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !rel.startsWith('/'))
 }
 
-export function applyHooks(ctx: Context, config: ResolvedConfig): void {
+export function applyHooks(ctx: Context, config: ResolvedConfig, contextGate?: DeferredContextGate): void {
   const shell = ctx.get('shell') as ShellExecutor | undefined
   if (shell === undefined) return // 无 shell 服务：不注册任何 hook 监听
   const warn = (message: string): void => ctx.logger.warn(message)
@@ -355,7 +356,10 @@ export function applyHooks(ctx: Context, config: ResolvedConfig): void {
       })
         .then((merged) => {
           const context = contextFrom(merged)
-          if (context) agent.inject(context)
+          if (context) {
+            if (contextGate === undefined) agent.inject(context)
+            else contextGate.inject(agent, context)
+          }
         })
         .catch((error) => {
           warn(`dsh-claude-in: SessionStart hook failed: ${errorMessage(error)}`)
@@ -378,6 +382,10 @@ export function applyHooks(ctx: Context, config: ResolvedConfig): void {
     const downstream = await next()
     const ours = contextFrom(merged)
     if (!ours || downstream.kind !== 'enter') return downstream
+    if (contextGate !== undefined && !contextGate.ready(agent)) {
+      contextGate.inject(agent, ours)
+      return downstream
+    }
     return { kind: 'enter', messages: [...downstream.messages, ours] }
   })
 
