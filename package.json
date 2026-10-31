@@ -1,6 +1,6 @@
 {
   "name": "dsh-claude-in",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "让 DeepSeek Harness 打开工作区时自动载入 Claude Code 配置：Skills/Rules/Hooks/Agents 四样资产，固定双位置（工作区自身 .claude + ~/.claude）运行时直读、零写入。Claude Code 兼容层。",
   "type": "module",
   "main": "./lib/index.js",

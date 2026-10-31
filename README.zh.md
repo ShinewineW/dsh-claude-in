@@ -31,12 +31,12 @@
 
 ## 安装
 
-当前源码适配 DeepSeek Harness `0.2.1-rc.2`，使用宿主等待完成的 `agent/created` 生命周期。这些兼容性与上下文时序变更位于 `master`，尚未发布到 Release。
+`0.2.0` 版本适配 DeepSeek Harness `0.2.1-rc.2`，使用宿主等待完成的 `agent/created` 生命周期。这是本次发布已验证的兼容基线，尚未验证更高版本的 DSH。
 
 ### 从 GitHub 源码安装
 
 ```sh
-dsh plugin --profile web add github:ShinewineW/dsh-claude-in#master
+dsh plugin --profile web add github:ShinewineW/dsh-claude-in#v0.2.0
 ```
 
 Git 安装通过 `prepare` 脚本从源码构建。pnpm 10 及以上版本可能要求在目标 profile 中显式允许构建：
@@ -49,13 +49,13 @@ allowBuilds:
 
 加入配置后重新执行安装命令即可。
 
-### 历史预构建 Release（v0.1.0）
+### 从预构建 Release 安装
 
-`v0.1.0` 预构建包面向较早的 DSH `0.1.0-rc.6` API，不包含当前源码的兼容性与上下文时序变更。DSH `0.2.1-rc.2` 请使用上面的源码安装方式。历史预构建包不需要安装时构建权限：
+`v0.2.0` 包含预构建代码，不需要安装时构建权限：
 
 ```sh
-curl -LO https://github.com/ShinewineW/dsh-claude-in/releases/download/v0.1.0/dsh-claude-in-0.1.0.tgz
-dsh plugin --profile web add ./dsh-claude-in-0.1.0.tgz
+curl -LO https://github.com/ShinewineW/dsh-claude-in/releases/download/v0.2.0/dsh-claude-in-0.2.0.tgz
+dsh plugin --profile web add ./dsh-claude-in-0.2.0.tgz
 ```
 
 ## 发现模型

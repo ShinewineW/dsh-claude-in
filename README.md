@@ -31,12 +31,12 @@ Session history, MCP configuration, Claude plugins, commands, memory, and direct
 
 ## Install
 
-The current source targets DeepSeek Harness `0.2.1-rc.2` and its awaited `agent/created` lifecycle. These compatibility and context-timing changes are available on `master` and have not been published in a release.
+Version `0.2.0` targets DeepSeek Harness `0.2.1-rc.2` and its awaited `agent/created` lifecycle. This is the verified compatibility baseline; later DSH versions have not been validated for this release.
 
 ### GitHub source
 
 ```sh
-dsh plugin --profile web add github:ShinewineW/dsh-claude-in#master
+dsh plugin --profile web add github:ShinewineW/dsh-claude-in#v0.2.0
 ```
 
 Git-based installation builds the package through its `prepare` script. pnpm 10 or later may require the build to be allowed in the target profile:
@@ -49,13 +49,13 @@ allowBuilds:
 
 After adding the entry, run the installation command again.
 
-### Historical prebuilt release (v0.1.0)
+### Prebuilt release
 
-The `v0.1.0` tarball targets the earlier DSH `0.1.0-rc.6` API and does not include the current source's compatibility or context-timing changes. For DSH `0.2.1-rc.2`, use the source installation above. The historical tarball does not require install-time build permission:
+The `v0.2.0` tarball includes prebuilt code and does not require install-time build permission:
 
 ```sh
-curl -LO https://github.com/ShinewineW/dsh-claude-in/releases/download/v0.1.0/dsh-claude-in-0.1.0.tgz
-dsh plugin --profile web add ./dsh-claude-in-0.1.0.tgz
+curl -LO https://github.com/ShinewineW/dsh-claude-in/releases/download/v0.2.0/dsh-claude-in-0.2.0.tgz
+dsh plugin --profile web add ./dsh-claude-in-0.2.0.tgz
 ```
 
 ## How it works
