@@ -9,11 +9,14 @@ import { mergeAgents } from '../src/agents.ts'
 import { loadUserHookConfig } from '../src/hooks.ts'
 import { discoverClaudeSkills, kebab } from '../src/skills.ts'
 import { discoverAgents, renderAgentCatalog, renderAgentDefinition } from '../src/agents.ts'
-import { parseClaudeConfig, loadHookConfig } from '../src/hooks.ts'
+import { parseClaudeConfig, loadHookConfig, applyHooks } from '../src/hooks.ts'
+// The hook protocol pins the Session peer to the supported host version.
+import { Session } from '@deepseek-ai/dsh-session'
+import { releasedV4SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { loadAdaptConfig, mergeAdaptConfig, applyHookCommandOverrides } from '../src/adapt.ts'
 import { findClaudeRoot } from '../src/discovery.ts'
 import { Config as ConfigSchema, resolveConfig } from '../src/config.ts'
-import { createDeferredContextGate } from '../src/context-gate.ts'
+import { apply } from '../src/index.ts'
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -22,6 +25,17 @@ let passed = 0
 function test(name, fn) {
   try {
     fn()
+    passed += 1
+    console.log(`PASS ${name}`)
+  } catch (error) {
+    console.error(`FAIL ${name}: ${error.message}`)
+    process.exitCode = 1
+  }
+}
+
+async function testAsync(name, fn) {
+  try {
+    await fn()
     passed += 1
     console.log(`PASS ${name}`)
   } catch (error) {
@@ -106,46 +120,6 @@ test('discovery: 不向上漂移（子目录开会话不带上父目录 .claude�
   assert.equal(findClaudeRoot(join(dir, 'ws', 'sub')), undefined)
   assert.ok(findClaudeRoot(join(dir, 'ws')))
   rmSync(dir, { recursive: true, force: true })
-})
-
-test('context gate: 首个模型请求前排队，第二个模型请求直接注入', () => {
-  const session = { id: 'session-first', events: [] }
-  const injected = []
-  const agent = { session, inject: (message) => injected.push(message) }
-  const gate = createDeferredContextGate()
-  gate.attach(agent)
-  assert.equal(gate.beginRequest(agent), false)
-  assert.equal(gate.ready(agent), false)
-  assert.equal(gate.inject(agent, 'baseline'), false)
-  assert.deepEqual(injected, [])
-  assert.equal(gate.beginRequest(agent), true)
-  assert.equal(gate.ready(agent), true)
-  assert.deepEqual(gate.drain(agent), ['baseline'])
-  assert.deepEqual(injected, [])
-  assert.equal(gate.inject(agent, 'later'), true)
-  assert.deepEqual(injected, ['later'])
-})
-
-test('context gate: tool/call 历史使恢复会话不重复延迟', () => {
-  const gate = createDeferredContextGate()
-  const session = { id: 'session-tool', events: [] }
-  const injected = []
-  const agent = { session, inject: (message) => injected.push(message) }
-  gate.attach(agent)
-  gate.beginRequest(agent)
-  gate.inject(agent, 'hook-context')
-  session.events.push({ type: 'tool/call' })
-  assert.equal(gate.beginRequest(agent), true)
-  assert.deepEqual(gate.drain(agent), ['hook-context'])
-  assert.deepEqual(injected, [])
-
-  const resumedSession = { id: 'session-resumed', events: [{ type: 'assistant/message' }] }
-  const resumedInjected = []
-  const resumedAgent = { session: resumedSession, inject: (message) => resumedInjected.push(message) }
-  gate.attach(resumedAgent)
-  assert.equal(gate.beginRequest(resumedAgent), true)
-  assert.equal(gate.inject(resumedAgent, 'baseline'), true)
-  assert.deepEqual(resumedInjected, ['baseline'])
 })
 
 // 可选的真实工作区回归样本。默认关闭，避免对私有环境产生硬依赖。
@@ -414,5 +388,155 @@ test('hooks: 用户级 CLAUDE_PROJECT_DIR 按当前项目解析', () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+// Exercise the same middleware seam that supplies messages to the model.
+for (const mode of ['new', 'resumed', 'mount-after-created']) {
+  await testAsync(`first request: ${mode} loads Rules, Agents, Skills and Hook context`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dci-first-request-'))
+    const previousHome = process.env.HOME
+    try {
+      const home = join(dir, 'home')
+      const project = join(dir, 'project')
+      process.env.HOME = home
+      for (const [root, level] of [[project, 'project'], [home, 'user']]) {
+        mkdirSync(join(root, '.claude', 'rules'), { recursive: true })
+        mkdirSync(join(root, '.claude', 'agents'))
+        mkdirSync(join(root, '.claude', 'skills', `${level}-skill`), { recursive: true })
+        writeFileSync(join(root, '.claude', 'rules', 'baseline.md'), `${level} first-request rule`)
+        writeFileSync(join(root, '.claude', 'agents', `${level}-reviewer.md`), `---\nname: ${level}-reviewer\ndescription: reviews ${level}\n---\n${level} agent definition`)
+        writeFileSync(join(root, '.claude', 'skills', `${level}-skill`, 'SKILL.md'), `---\ndescription: ${level} skill\n---\n${level} skill body`)
+      }
+      writeFileSync(join(project, '.claude', 'settings.json'), JSON.stringify({ hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command: 'startup-context' }] }],
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'prompt-context' }] }],
+      } }))
+      const stored = Session.create(`first-${mode}`)
+      if (mode === 'resumed') stored.append('tool/call', { turn: 1, callId: 'previous', name: 'read', arguments: {} })
+      const session = Session.create(`first-${mode}`, stored.snapshotEvents(), { ...stored.header, cwd: project })
+      const listeners = new Map()
+      let provider
+      const requests = []
+      const shell = {
+        resolve: (request) => request,
+        async execute(request) {
+          requests.push(request)
+          return { async result() {
+            // The new host waits for even asynchronous SessionStart hooks.
+            await new Promise((resolve) => setImmediate(resolve))
+            const event = JSON.parse(request.stdin).hook_event_name
+            return { exitCode: 0, stdout: { text: JSON.stringify({ hookSpecificOutput: {
+              hookEventName: event, additionalContext: request.command,
+            } }) }, stderr: { text: '' } }
+          } }
+        },
+      }
+      const ctx = {
+        get: (name) => ({ shell, skills: { registerProvider(factory) { provider = factory(); return () => {} } } })[name],
+        logger: { info() {}, warn: (message) => assert.fail(message) },
+        effect: (effect) => effect(),
+        on(name, listener, options) {
+          const entries = listeners.get(name) ?? []
+          if (options?.prepend) entries.unshift(listener)
+          else entries.push(listener)
+          listeners.set(name, entries)
+        },
+      }
+      apply(ctx, {})
+      const injected = []
+      const agent = { session, inject: (message) => injected.push(message) }
+      if (mode !== 'mount-after-created') {
+        for (const listener of listeners.get('agent/created') ?? []) await listener({ agent, source: mode === 'resumed' ? 'resume' : 'startup', signal: new AbortController().signal })
+      }
+      const messages = [...injected, { role: 'user', content: [{ type: 'text', text: 'first prompt' }] }]
+      const payload = { agent, messages, turn: 2, step: 1, signal: new AbortController().signal }
+      const runStep = async (terminal = { kind: 'enter', messages }) => {
+        const entries = listeners.get('agent/pre-step')
+        const dispatch = async (index) => index === entries.length ? terminal : entries[index](payload, () => dispatch(index + 1))
+        return dispatch(0)
+      }
+      // A rejected attempt must not consume the baseline.
+      assert.equal((await runStep({ kind: 'reject' })).kind, 'reject')
+      const first = await runStep()
+      assert.equal(first.kind, 'enter')
+      // Persist the admitted model batch with the real host codec. Session.append
+      // alone does not enforce V4's producer-owned source requirements.
+      for (const message of first.messages) {
+        const identified = message.id ? message : { ...message, id: 'first-prompt', source: { kind: 'user' } }
+        const event = session.append('user/message', identified, { surfaceOp: 'append' })
+        assert.doesNotThrow(() => releasedV4SessionFormatCodec.encodeEvent(event))
+      }
+      const text = first.messages.flatMap((message) => message.content).map((block) => block.text).join('\n')
+      for (const expected of ['project first-request rule', 'user first-request rule', 'claude-agent-project-reviewer', 'claude-agent-user-reviewer', 'prompt-context']) assert.ok(text.includes(expected), expected)
+      assert.equal(text.includes('startup-context'), mode !== 'mount-after-created')
+      const candidates = await provider.list({ cwd: project })
+      for (const name of ['project-skill', 'user-skill', 'claude-agent-project-reviewer', 'claude-agent-user-reviewer']) assert.ok(candidates.some((candidate) => candidate.name === name), name)
+      const skill = candidates.find((candidate) => candidate.name === 'user-skill')
+      assert.equal((await provider.get(skill)).content, 'user skill body')
+      const second = await runStep({ kind: 'enter', messages: [] })
+      const secondText = second.messages.flatMap((message) => message.content).map((block) => block.text).join('\n')
+      assert.ok(!secondText.includes('first-request rule'))
+      assert.equal(injected.length, mode === 'mount-after-created' ? 0 : 1)
+      assert.ok(requests.every((request) => request.workdir === project))
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME
+      else process.env.HOME = previousHome
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
+
 // ── 汇总 ───────────────────────────────────────────────────────────────────
+await testAsync('hooks: current Session pre/post tool middleware uses projected turn and reaches next', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dci-session-hooks-'))
+  const previousHome = process.env.HOME
+  try {
+    process.env.HOME = dir
+    mkdirSync(join(dir, '.claude'))
+    writeFileSync(join(dir, '.claude', 'settings.json'), JSON.stringify({ hooks: {
+      PreToolUse: [{ hooks: [{ type: 'command', command: 'echo pre' }] }],
+      PostToolUse: [{ hooks: [{ type: 'command', command: 'echo post' }] }],
+    } }))
+    const session = Session.create('session-hooks', undefined, { ...Session.create('session-hooks').header, cwd: dir })
+    assert.equal(session.events, undefined)
+    const listeners = new Map()
+    const requests = []
+    const projectedSessions = []
+    const sessionProjections = { stateOf(current, key) {
+      assert.equal(key, 'turnBoundary')
+      projectedSessions.push(current)
+      return { lastTurn: 7 }
+    } }
+    const shell = {
+      resolve: (request) => request,
+      async execute(request) {
+        requests.push(request)
+        return { result: async () => ({ exitCode: 0, stdout: { text: '' }, stderr: { text: '' } }) }
+      },
+    }
+    const ctx = {
+      sessionProjections,
+      get: (name) => ({ shell, sessionProjections })[name],
+      logger: { warn: (message) => assert.fail(message) },
+      effect: (effect) => effect(),
+      on: (name, listener) => listeners.set(name, listener),
+    }
+    applyHooks(ctx, resolveConfig())
+    const exec = { agent: { session }, name: 'bash', callId: 'bash-test', arguments: { command: 'pwd' }, signal: new AbortController().signal }
+    const reached = []
+    const pre = { kind: 'allow' }
+    const post = { kind: 'pass' }
+    assert.equal(await listeners.get('tools/pre-execute')(exec, async () => { reached.push('pre'); return pre }), pre)
+    assert.equal(await listeners.get('tools/post-execute')(exec, { content: [] }, async () => { reached.push('post'); return post }), post)
+    assert.deepEqual(reached, ['pre', 'post'])
+    assert.deepEqual(projectedSessions, [session, session])
+    assert.deepEqual(requests.map((request) => JSON.parse(request.stdin).hook_event_name), ['PreToolUse', 'PostToolUse'])
+    assert.deepEqual(session.snapshotEvents().map((event) => [event.type, event.data.turn]), [
+      ['hook/invoked', 7], ['hook/result', 7], ['hook/invoked', 7], ['hook/result', 7],
+    ])
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 console.log(`\n${passed} tests passed${process.exitCode ? ' (some failed)' : ''}`)

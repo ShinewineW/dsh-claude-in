@@ -32,8 +32,8 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-hook-protocol": "0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-hook-protocol": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "3.18.5",
     "yaml": "^2.9.0"
   },
   "bundledDependencies": [
@@ -45,6 +45,7 @@
     "test": "node tests/test.mjs"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-session-format-v3-to-v4": "0.2.1-rc.2",
     "esbuild": "^0.25.9"
   },
   "publishConfig": {

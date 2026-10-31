@@ -31,10 +31,12 @@
 
 ## 安装
 
+当前源码适配 DeepSeek Harness `0.2.1-rc.2`，使用宿主等待完成的 `agent/created` 生命周期。这些兼容性与上下文时序变更位于 `master`，尚未发布到 Release。
+
 ### 从 GitHub 源码安装
 
 ```sh
-dsh plugin --profile web add github:ShinewineW/dsh-claude-in#v0.1.0
+dsh plugin --profile web add github:ShinewineW/dsh-claude-in#master
 ```
 
 Git 安装通过 `prepare` 脚本从源码构建。pnpm 10 及以上版本可能要求在目标 profile 中显式允许构建：
@@ -47,9 +49,9 @@ allowBuilds:
 
 加入配置后重新执行安装命令即可。
 
-### 从预构建 Release 安装
+### 历史预构建 Release（v0.1.0）
 
-预构建包不需要安装时构建权限：
+`v0.1.0` 预构建包面向较早的 DSH `0.1.0-rc.6` API，不包含当前源码的兼容性与上下文时序变更。DSH `0.2.1-rc.2` 请使用上面的源码安装方式。历史预构建包不需要安装时构建权限：
 
 ```sh
 curl -LO https://github.com/ShinewineW/dsh-claude-in/releases/download/v0.1.0/dsh-claude-in-0.1.0.tgz
@@ -69,11 +71,9 @@ dsh plugin --profile web add ./dsh-claude-in-0.1.0.tgz
 
 ## 运行机制
 
-### 首次模型请求的上下文时序
+### 上下文时序
 
-对于新会话，插件不会向模型请求 #1 加入自身提供的上下文。Rule 与 Agent 目录基线以及早期 Hook 产生的 `additionalContext` 会在该请求期间进入等待队列，然后直接包含在模型请求 #2 中。如果恢复会话的现有历史已经包含持久化的 `assistant/message` 或 `tool/call`，插件会将其视为已经完成请求 #1，因此队列中的上下文可以直接包含在下一次模型请求中。
-
-这一延迟只影响模型上下文注入。Skill 与 Agent 注册仍然有效，Hooks 也会照常执行并强制实施其决策。该门控在插件中全局生效，不依赖 preset，支持 `anchored-standard`、`router-suite` 和 `router-standard`。
+新建和恢复会话的首个获准执行的模型请求就会包含 Rules 与 Agent 目录。Skills 在插件加载时注册。UserPromptSubmit Hook 的上下文加入同一次请求；插件观察到宿主等待完成的 `agent/created` 生命周期时，SessionStart Hook 的上下文也会加入该请求。在此事件之后动态加载插件无法补跑 SessionStart。所有 preset 均无首轮延迟。
 
 ### Rules
 

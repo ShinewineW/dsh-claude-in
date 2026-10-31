@@ -5,7 +5,7 @@
  * （BSD-3-Clause，本文件为改写实现）：
  *  - 配置来源：`.claude/settings.json` + `.claude/settings.local.json` +
  *    `.claude/hooks.json`（local 按事件覆盖 settings，settings 覆盖 hooks.json）；
- *  - 7 个事件映射到 DSH seams：SessionStart→agent/session-start，
+ *  - 7 个事件映射到 DSH seams：SessionStart→agent/created，
  *    UserPromptSubmit→agent/pre-step，PreToolUse→tools/pre-execute，
  *    PostToolUse→tools/post-execute，Stop→agent/turn-stopping，
  *    SubagentStart/Stop→subagent/start、subagent/end；
@@ -17,7 +17,7 @@
  *    `permissionDecision` / `additionalContext` 按 bridge 语义折叠。
  * @module dsh-claude-in/hooks
  */
-import { readFileSync, existsSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { createUserMessage } from './compat.ts'
@@ -34,7 +34,6 @@ import {
 } from '@deepseek-ai/dsh-hook-protocol'
 import type { CommandHook, MatcherGroup } from '@deepseek-ai/dsh-hook-protocol'
 import type { Context } from '@deepseek-ai/cordis'
-import type { DeferredContextGate } from './context-gate.ts'
 import type { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import { findClaudeRoot } from './discovery.ts'
 import type { ResolvedConfig } from './config.ts'
@@ -192,7 +191,7 @@ function userHookFingerprint(home: string): string {
     .join(':')
 }
 
-const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'dsh-claude-in' } as const
+const PLUGIN_SOURCE = { kind: 'dsh-claude-in', plugin: 'dsh-claude-in', origin: 'claude-hooks' } as const
 
 let handlerCounter = 0
 function nextHandlerId(point: string): string {
@@ -202,11 +201,14 @@ function nextHandlerId(point: string): string {
 /** 会话是否属于该项目根（cwd 过滤）。 */
 function sessionInRoot(cwd: string | undefined, root: string): boolean {
   if (cwd === undefined) return false
+  // Discovery canonicalizes roots; compare aliases using the same filesystem identity.
+  try { cwd = realpathSync(cwd) } catch { /* retain the supplied path if unavailable */ }
+  try { root = realpathSync(root) } catch { /* retain the supplied path if unavailable */ }
   const rel = relative(root, cwd)
   return rel === '' || (!rel.startsWith('..') && !rel.startsWith('/'))
 }
 
-export function applyHooks(ctx: Context, config: ResolvedConfig, contextGate?: DeferredContextGate): void {
+export function applyHooks(ctx: Context, config: ResolvedConfig): void {
   const shell = ctx.get('shell') as ShellExecutor | undefined
   if (shell === undefined) return // 无 shell 服务：不注册任何 hook 监听
   const warn = (message: string): void => ctx.logger.warn(message)
@@ -219,7 +221,8 @@ export function applyHooks(ctx: Context, config: ResolvedConfig, contextGate?: D
   const configCache = new Map<string, HookConfig | undefined>()
   const hookConfigFor = (cwd: string | undefined): HookConfig | undefined => {
     if (cwd === undefined) return undefined
-    const home = homedir()
+    let home = homedir()
+    try { home = realpathSync(home) } catch { /* retain the configured home if unavailable */ }
     const root = findClaudeRoot(cwd, config.claudeDir)
     // 项目根即家目录时用户级与项目级同一份，只载一次
     const userIsProject = root !== undefined && root.path === home
@@ -344,30 +347,24 @@ export function applyHooks(ctx: Context, config: ResolvedConfig, contextGate?: D
     return sessionInRoot(cwd, hookConfig.root) ? hookConfig : undefined
   }
 
-  // SessionStart —— 不能阻塞，detached 运行，additionalContext → agent.inject
-  ctx.on('agent/session-start', ({ agent, source }) => {
+  // agent/created is awaited by the host before its loop can claim input.
+  ctx.on('agent/created', async ({ agent, source, signal }) => {
     invalidate(agent?.session?.header?.cwd)
     const hookConfig = configForAgent(agent)
     if (hookConfig === undefined) return
-    detached.track(
-      runPoint(hookConfig, 'SessionStart', source ?? '', sessionStartPayload(ctx, agent, source), {
+    try {
+      const merged = await runPoint(hookConfig, 'SessionStart', source ?? '', sessionStartPayload(ctx, agent, source), {
         agent,
-        signal: detached.signal,
+        signal: signal ?? detached.signal,
       })
-        .then((merged) => {
-          const context = contextFrom(merged)
-          if (context) {
-            if (contextGate === undefined) agent.inject(context)
-            else contextGate.inject(agent, context)
-          }
-        })
-        .catch((error) => {
-          warn(`dsh-claude-in: SessionStart hook failed: ${errorMessage(error)}`)
-        }),
-    )
+      const context = contextFrom(merged)
+      if (context) agent.inject(context)
+    } catch (error) {
+      warn(`dsh-claude-in: SessionStart hook failed: ${errorMessage(error)}`)
+    }
   })
 
-  // UserPromptSubmit —— deny → reject；additionalContext 追加
+  // UserPromptSubmit —— deny → reject; context enters the current request.
   ctx.on('agent/pre-step', async ({ agent, messages, turn, signal }, next) => {
     if (messages.length === 0) return next()
     const hookConfig = configForAgent(agent)
@@ -382,11 +379,7 @@ export function applyHooks(ctx: Context, config: ResolvedConfig, contextGate?: D
     const downstream = await next()
     const ours = contextFrom(merged)
     if (!ours || downstream.kind !== 'enter') return downstream
-    if (contextGate !== undefined && !contextGate.ready(agent)) {
-      contextGate.inject(agent, ours)
-      return downstream
-    }
-    return { kind: 'enter', messages: [...downstream.messages, ours] }
+    return { ...downstream, messages: [...downstream.messages, ours] }
   })
 
   // PreToolUse —— deny → PreToolDecision.deny；ask → PreToolDecision.ask
@@ -394,7 +387,7 @@ export function applyHooks(ctx: Context, config: ResolvedConfig, contextGate?: D
     if (exec.agent === undefined) return next()
     const hookConfig = configForAgent(exec.agent)
     if (hookConfig === undefined) return next()
-    const turn = lastTurn(exec.agent)
+    const turn = lastTurn(ctx, exec.agent)
     const merged = await runPoint(hookConfig, 'PreToolUse', exec.name, preToolPayload(ctx, exec), {
       agent: exec.agent,
       turn,
@@ -414,7 +407,7 @@ export function applyHooks(ctx: Context, config: ResolvedConfig, contextGate?: D
     if (exec.agent === undefined) return next()
     const hookConfig = configForAgent(exec.agent)
     if (hookConfig === undefined) return next()
-    const turn = lastTurn(exec.agent)
+    const turn = lastTurn(ctx, exec.agent)
     const merged = await runPoint(hookConfig, 'PostToolUse', exec.name, postToolPayload(ctx, exec, result), {
       agent: exec.agent,
       turn,
@@ -495,11 +488,9 @@ export function applyHooks(ctx: Context, config: ResolvedConfig, contextGate?: D
 
 const SUBAGENT_TYPE = 'general-purpose'
 
-function lastTurn(agent: any): number {
+function lastTurn(ctx: Context, agent: any): number {
   if (!agent) return 0
-  const events = [...agent.session.events]
-  const last = events.findLast((e: any) => e.type === 'turn/start')
-  return last?.type === 'turn/start' ? last.data.turn : 0
+  return ctx.sessionProjections.stateOf(agent.session, 'turnBoundary').lastTurn
 }
 
 function blocksToText(content: readonly any[]): string {

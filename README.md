@@ -31,10 +31,12 @@ Session history, MCP configuration, Claude plugins, commands, memory, and direct
 
 ## Install
 
+The current source targets DeepSeek Harness `0.2.1-rc.2` and its awaited `agent/created` lifecycle. These compatibility and context-timing changes are available on `master` and have not been published in a release.
+
 ### GitHub source
 
 ```sh
-dsh plugin --profile web add github:ShinewineW/dsh-claude-in#v0.1.0
+dsh plugin --profile web add github:ShinewineW/dsh-claude-in#master
 ```
 
 Git-based installation builds the package through its `prepare` script. pnpm 10 or later may require the build to be allowed in the target profile:
@@ -47,9 +49,9 @@ allowBuilds:
 
 After adding the entry, run the installation command again.
 
-### Prebuilt release
+### Historical prebuilt release (v0.1.0)
 
-The release tarball does not require install-time build permission:
+The `v0.1.0` tarball targets the earlier DSH `0.1.0-rc.6` API and does not include the current source's compatibility or context-timing changes. For DSH `0.2.1-rc.2`, use the source installation above. The historical tarball does not require install-time build permission:
 
 ```sh
 curl -LO https://github.com/ShinewineW/dsh-claude-in/releases/download/v0.1.0/dsh-claude-in-0.1.0.tgz
@@ -67,11 +69,9 @@ Parent directories and unrelated filesystem locations are not scanned. A session
 
 Symbolic links within discovered Skill and Agent trees are followed. Rule `@import` directives may also resolve files or directories outside the discovery roots. These are explicit asset references, not additional discovery locations.
 
-### First-request context timing
+### Context timing
 
-For a new session, the plugin keeps model request #1 free of plugin-supplied context. The Rule and Agent catalog baseline and any early Hook `additionalContext` are queued while that request runs, then included directly in model request #2. A resumed session whose existing history already contains a durable `assistant/message` or `tool/call` is treated as already past request #1, so its queued context can be included in the next model request.
-
-This delay applies only to model-context injection. Skill and Agent registration remains active, and Hooks still run and enforce their decisions. The gate is global to the plugin and preset-agnostic; it supports `anchored-standard`, `router-suite`, and `router-standard`.
+Rules and the Agent catalog are included in the first admitted model request of new and resumed sessions. Skills are registered when the plugin loads. UserPromptSubmit Hook context joins that same request, as does SessionStart Hook context when the plugin observes the awaited `agent/created` lifecycle. Dynamically loading the plugin after that event cannot replay SessionStart. No preset adds a first-request delay.
 
 ### Rules
 

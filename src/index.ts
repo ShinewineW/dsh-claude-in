@@ -33,10 +33,9 @@ import type { ClaudeAgent } from './agents.ts'
 import { applyHooks } from './hooks.ts'
 import { loadAdaptConfig, mergeAdaptConfig } from './adapt.ts'
 import { errorMessage } from './frontmatter.ts'
-import { createDeferredContextGate } from './context-gate.ts'
 
 export const name = 'dsh-claude-in'
-export const inject = ['skills', 'shell']
+export const inject = ['skills', 'shell', 'sessionProjections']
 export { Config, resolveConfig }
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -93,7 +92,6 @@ export function apply(ctx: Context, raw?: Config): void {
 
   // ── 会话状态与基线缓存 ─────────────────────────────────────────────────
   const sessions = new WeakMap<object, SessionState>()
-  const contextGate = createDeferredContextGate()
 
   interface BaselineCacheEntry {
     state: SessionState
@@ -184,12 +182,11 @@ export function apply(ctx: Context, raw?: Config): void {
     return parts.join('\n\n')
   }
 
-  const injectBaseline = (agent: any): void => {
+  const baselineFor = (agent: any): { state: SessionState; message: any } | undefined => {
     const state = loadSessionState(agent)
     if (state === undefined) return
-    sessions.set(agent.session, state)
     const text = buildBaseline(state, state.config)
-    if (text === undefined || text === '') return
+    if (text === undefined || text === '') return { state, message: undefined }
     const message = createUserMessage({
       content: [{ type: 'text', text }],
       source: {
@@ -200,35 +197,26 @@ export function apply(ctx: Context, raw?: Config): void {
         claudeRoot: state.root?.path ?? state.userRoot?.path,
       },
     })
-    contextGate.defer(agent, message)
     const roots = [state.root?.claudeDir, state.userRoot?.claudeDir].filter((p): p is string => p !== undefined).join(' + ')
-    ctx.logger.info(`dsh-claude-in: deferred baseline (.claude: ${roots}; rules=${state.discovery.rules.length}, agents=${state.agents.length})`)
+    ctx.logger.info(`dsh-claude-in: loaded baseline (.claude: ${roots}; rules=${state.discovery.rules.length}, agents=${state.agents.length})`)
+    return { state, message }
   }
 
   if (config.loadRules || config.loadAgents) {
-    const prepareBaseline = (agent: any): void => {
+    // Include baseline instructions in the admitted batch, including when a
+    // dynamic mount missed agent/created. This also applies to resumed sessions.
+    ctx.on('agent/pre-step', async ({ agent }, next) => {
+      const decision = await next()
+      if (decision.kind !== 'enter' || sessions.has(agent.session)) return decision
       try {
-        contextGate.attach(agent)
-        injectBaseline(agent)
+        const baseline = baselineFor(agent)
+        if (baseline === undefined) return decision
+        sessions.set(agent.session, { ...baseline.state, injectedScoped: new Set() })
+        return baseline.message === undefined ? decision : { ...decision, messages: [...decision.messages, baseline.message] }
       } catch (error) {
         warn(`dsh-claude-in: baseline injection failed: ${errorMessage(error)}`)
+        return decision
       }
-    }
-
-    ctx.on('agent/session-start', ({ agent }) => {
-      prepareBaseline(agent)
-    })
-
-    // Dynamic plugin mounts can miss agent/session-start for an agent that is
-    // created in the same host lifecycle. The first pre-step is the reliable
-    // fallback seam; the gate still queues this baseline for request #2.
-    ctx.on('agent/pre-step', async ({ agent }, next) => {
-      const ready = contextGate.beginRequest(agent)
-      if (!sessions.has(agent.session)) prepareBaseline(agent)
-      const decision = await next()
-      if (!ready || decision.kind !== 'enter') return decision
-      const deferred = contextGate.drain(agent)
-      return deferred.length === 0 ? decision : { ...decision, messages: [...decision.messages, ...deferred] }
     }, { prepend: true })
   }
 
@@ -285,7 +273,7 @@ export function apply(ctx: Context, raw?: Config): void {
     if (ctx.get('shell') === undefined) {
       warn('dsh-claude-in: ctx.shell unavailable — hooks skipped')
     } else {
-      applyHooks(ctx, config, contextGate)
+      applyHooks(ctx, config)
     }
   }
 }
